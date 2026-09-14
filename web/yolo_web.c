@@ -70,6 +70,7 @@ static int g_app_running = 0;
 static pthread_mutex_t g_app_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pid_t g_app_pid = -1;
 static int g_stdout_pipe[2];
+static time_t g_app_start_ts = 0;   /* 应用启动时刻, 用于计算运行时长 */
 
 static int app_is_running(void) {
     if (g_app_pid > 0 && kill(g_app_pid, 0) == 0) return 1;
@@ -93,6 +94,7 @@ static void stop_app(void) {
     g_app_pid = -1;
     pthread_mutex_unlock(&g_app_mutex);
     g_app_running = 0;
+    g_app_start_ts = 0;
 }
 
 /* ---------------- 车牌收集 ---------------- */
@@ -172,6 +174,7 @@ static int start_app(void) {
     }
     close(g_stdout_pipe[1]);
     g_app_pid = pid;
+    g_app_start_ts = time(NULL);
     pthread_mutex_unlock(&g_app_mutex);
     g_app_running = 1;
     /* 启动输出读取线程 */
@@ -179,6 +182,23 @@ static int start_app(void) {
     pthread_create(&tid, NULL, app_output_thread, NULL);
     pthread_detach(tid);
     return 0;
+}
+
+/* ---------------- NPU 使用率 ---------------- */
+
+#define NPU_LOAD_PATH   "/sys/kernel/debug/rknpu/load"
+
+/* 读取 NPU load 百分比; 读取失败返回 -1 */
+static int read_npu_load(void) {
+    FILE *f = fopen(NPU_LOAD_PATH, "r");
+    if (!f) return -1;
+    char buf[256];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = 0;
+    fclose(f);
+    int load = -1;
+    if (sscanf(buf, "NPU load: %d%%", &load) == 1) return load;
+    return -1;
 }
 
 /* ---------------- HTTP 工具 ---------------- */
@@ -258,6 +278,8 @@ static const char *HTML_PAGE =
 "<div class=\"card\"><h2>应用状态</h2>"
 "<div class=\"toolbar\">"
 "<span id=\"status\" class=\"badge stop\">未知</span>"
+"<span>运行时长: <b id=\"uptime\">--</b></span>"
+"<span>NPU 使用率: <b id=\"npu_load\">--</b></span>"
 "<button class=\"btn-green\" onclick=\"startApp()\">启动</button>"
 "<button class=\"btn-red\" onclick=\"stopApp()\">停止</button>"
 "<button class=\"btn-blue\" onclick=\"restartApp()\">重启</button>"
@@ -411,7 +433,12 @@ static const char *HTML_PAGE =
 "s.className='badge '+(run?'run':'stop');s.textContent=run?'运行中':'已停止';}"
 "function loadState(){fetch('/api/state').then(function(r){return r.json()}).then(function(d){"
 "setStatus(d.running);"
-"for(var k in d){if(k==='running')continue;var el=document.getElementById(k);if(el)el.value=d[k];}});}"
+"if(d.uptime!==undefined)document.getElementById('uptime').textContent=fmtUptime(d.uptime);"
+"if(d.npu_load!==undefined)document.getElementById('npu_load').textContent=(d.npu_load<0?'N/A':d.npu_load+'%');"
+"for(var k in d){if(k==='running'||k==='uptime'||k==='npu_load')continue;var el=document.getElementById(k);if(el)el.value=d[k];}});}"
+"function fmtUptime(s){s=Math.floor(s);if(s<0)s=0;"
+"var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60),sec=s%60;"
+"var r='';if(d>0)r+=d+'天 ';r+=h+'时 '+m+'分 '+sec+'秒';return r;}"
 "function plateTypeChanged(){"
 "var el=document.getElementById('car_plate_model');if(!el)return;"
 "var t=document.getElementById('car_plate_type').value;"
@@ -427,7 +454,7 @@ static const char *HTML_PAGE =
 "function restartApp(){doPost('/api/restart')}"
 "function loadLog(){fetch('/api/log').then(function(r){return r.text()}).then(function(t){"
 "var el=document.getElementById('logBox');if(el){el.value=t||'';el.scrollTop=el.scrollHeight;}});}"
-"loadState();loadLog();setInterval(loadLog,3000);"
+"loadState();loadLog();setInterval(loadState,2000);setInterval(loadLog,3000);"
 "</script></body></html>";
 
 /* ---------------- 读取/解析配置为 JSON 片段 ---------------- */
@@ -632,7 +659,15 @@ static void *handle_client(void *arg) {
     else if (!strcmp(path, "/api/state")) {
         char json[MAX_CFG + 2048];
         char v[1024];
-        snprintf(json, sizeof(json), "{\"running\":%d", app_is_running());
+        /* 运行时长 (秒) */
+        long uptime = 0;
+        if (app_is_running() && g_app_start_ts > 0)
+            uptime = (long)(time(NULL) - g_app_start_ts);
+        /* NPU 使用率 */
+        int npu = read_npu_load();
+        snprintf(json, sizeof(json),
+            "{\"running\":%d,\"uptime\":%ld,\"npu_load\":%d",
+            app_is_running(), uptime, npu);
         for (int i = 0; CFG_FIELDS[i]; i++) {
             cfg_value(CFG_FIELDS[i], v, sizeof(v));
             strncat(json, ",\"", sizeof(json) - strlen(json) - 1);
