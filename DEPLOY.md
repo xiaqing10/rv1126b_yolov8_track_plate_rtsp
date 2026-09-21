@@ -9,7 +9,7 @@
 | `src/`, `include/` | 源码 | 是 |
 | `Makefile` | 交叉编译 | 是 |
 | `config/yolo.conf` | 运行配置模板 | 是 |
-| `labels/coco_80_labels_list.txt` | COCO 类别标签 | 是 |
+| `labels/kezhu_labels.txt` | 10 类检测标签 | 是 |
 | `run_yolo_rtsp.sh` | 板端启动脚本 | 是 |
 | `yolo_logrotate.sh` | 日志轮转脚本 | 是 |
 | `web/yolo_web.c` + `web/README.md` | Web 面板源码/文档 | 是 |
@@ -53,7 +53,7 @@ make all
 │   ├── car_recognition.rknn          #   车身颜色识别
 │   ├── lprnet.rknn                   #   备用: 纯车牌号识别
 │   ├── yolov8s_80_rv1126b.rknn       #   主 YOLOv8 检测
-│   └── labels/coco_80_labels_list.txt
+│   └── labels/kezhu_labels.txt
 ├── run_yolo_rtsp.sh                  # 启动脚本
 └── yolo_logrotate.sh                 # 日志轮转
 ```

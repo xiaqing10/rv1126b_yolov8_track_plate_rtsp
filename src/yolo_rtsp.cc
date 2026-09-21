@@ -51,7 +51,11 @@
 #include "bytetrack/BYTETracker.h"
 #include "car_integ.h"
 #include "tcp_output.h"
+#include "citradar_ab02.hpp"
 #include "deepsort/deepsort_integ.h"
+
+#include <string>
+#include <vector>
 
 #define ALIGN16(x) ((((x) + 15) / 16) * 16)
 #define AIQ_CTX_MAX 8
@@ -102,6 +106,15 @@ static float g_main_roi_ai_sx = 1.0f, g_main_roi_ai_sy = 1.0f;  // 缩放系数 
 // ---- TCP + NDJSON 输出 (frame/detection/plate_adopted) ----
 static tcp_output_cfg_t g_tcp_cfg;   // enable/port 由 config 填充
 static long g_tcp_frame_seq = 0;     // frame 消息自增序号
+
+// ---- CitRadar AB02 协议输出 (TCP 客户端外连, 二进制) ----
+static struct {
+    int      enable;
+    std::string host;
+    int      port;
+    std::string device_serial_hex;
+} g_ab02_cfg = { 0, "192.168.1.123", 9999, "fdc656bf7f00588d" };
+static citradar::TcpPublisher *g_ab02_pub = NULL;
 
 // ---- 输入源选择 ----
 static int  g_file_mode = 0;            // 0=摄像头 1=本地视频文件
@@ -248,6 +261,11 @@ static void cfg_set(const char *k, const char *v) {
     else if (!strcmp(k, "tcp_enable"))    g_tcp_cfg.enable = atoi(v) ? 1 : 0;
     else if (!strcmp(k, "tcp_port"))      g_tcp_cfg.port = atoi(v);
     else if (!strcmp(k, "tcp_max_clients")) g_tcp_cfg.max_clients = atoi(v);
+    // ---- CitRadar AB02 协议输出 (客户端外连) ----
+    else if (!strcmp(k, "ab02_enable"))   g_ab02_cfg.enable = atoi(v) ? 1 : 0;
+    else if (!strcmp(k, "ab02_host"))     g_ab02_cfg.host = v;
+    else if (!strcmp(k, "ab02_port"))     g_ab02_cfg.port = atoi(v);
+    else if (!strcmp(k, "ab02_serial"))   g_ab02_cfg.device_serial_hex = v;
     // ---- 跟踪器 (bytetrack|deepsort) + ReID 模型 ----
     else if (!strcmp(k, "tracker"))   g_tracker_type = (!strcmp(v, "deepsort")) ? 1 : 0;
     else if (!strcmp(k, "reid_model")) snprintf(g_reid_model, sizeof(g_reid_model), "%s", v);
@@ -1763,6 +1781,84 @@ static const char *plate_color_cn_tcp(const char *en) {
     return en;
 }
 
+// CitRadar AB02: 主YOLO(kezhu-det 10类, 0基) cls_id -> ObjType 枚举映射
+// 仅映射目标车辆: 2=小车 3=厢车 4=巴士 5=卡车 6=摩托; 其余 -> Other
+static citradar::ObjType cls_to_objtype(int cls_id)
+{
+    switch (cls_id) {
+    case 2:  return citradar::ObjType::Sedan;   // 小车
+    case 3:  return citradar::ObjType::Mpv;     // 厢车 (值10)
+    case 4:  return citradar::ObjType::Bus;     // 巴士
+    case 5:  return citradar::ObjType::Truck;   // 卡车
+    case 6:  return citradar::ObjType::Ebike;   // 摩托 (值3)
+    default: return citradar::ObjType::Other;
+    }
+}
+
+// 车牌色 (中文) -> PlateColor 枚举
+static citradar::PlateColor plate_color_to_enum(const char *cn)
+{
+    if (!strcmp(cn, "黑色")) return citradar::PlateColor::Black;
+    if (!strcmp(cn, "蓝色")) return citradar::PlateColor::Blue;
+    if (!strcmp(cn, "绿色")) return citradar::PlateColor::Green;
+    if (!strcmp(cn, "白色")) return citradar::PlateColor::White;
+    if (!strcmp(cn, "黄色")) return citradar::PlateColor::Yellow;
+    return citradar::PlateColor::Other;
+}
+
+// 车身色 (中文) -> VehColor 枚举
+static citradar::VehColor car_color_to_enum(const char *cn)
+{
+    if (!strcmp(cn, "黑色")) return citradar::VehColor::Black;
+    if (!strcmp(cn, "蓝色")) return citradar::VehColor::Blue;
+    if (!strcmp(cn, "黄色")) return citradar::VehColor::Yellow;
+    if (!strcmp(cn, "棕色")) return citradar::VehColor::Brown;
+    if (!strcmp(cn, "绿色")) return citradar::VehColor::Green;
+    if (!strcmp(cn, "灰色")) return citradar::VehColor::Gray;
+    if (!strcmp(cn, "粉色")) return citradar::VehColor::Pink;
+    if (!strcmp(cn, "紫色")) return citradar::VehColor::Purple;
+    if (!strcmp(cn, "红色")) return citradar::VehColor::Red;
+    if (!strcmp(cn, "白色")) return citradar::VehColor::White;
+    return citradar::VehColor::Other;
+}
+
+// CitRadar AB02 输出: 把每帧跟踪结果(含回填的车牌/车色)组装成 AB02 二进制帧发送。
+// box 为整幅-AI 坐标 (0..g_ai_w x 0..g_ai_h); dist/speed/lon/lat 暂填 0 (未做单应标定)。
+static void ab02_send_detections(const object_detect_result_list *od)
+{
+    if (!g_ab02_pub) return;
+
+    static std::vector<citradar::Ab02Target> targets;
+    targets.clear();
+
+    for (int i = 0; i < od->count; i++) {
+        const object_detect_result *r = &od->results[i];
+        if (r->track_id < 0) continue;
+
+        citradar::ObjType type = cls_to_objtype(r->cls_id);
+        if (type == citradar::ObjType::Other) continue;  // 仅上报目标车辆
+
+        citradar::Ab02Target t;
+        t.vision_id = static_cast<uint16_t>(r->track_id);
+        t.type = type;
+        t.setBox(r->box.left, r->box.top, r->box.right, r->box.bottom);
+        t.veh_color = car_color_to_enum(r->car_color);
+        if (r->has_plate && r->plate_number[0]) {
+            t.plate_flag = 1;
+            t.plate = r->plate_number;
+            t.plate_color = plate_color_to_enum(r->plate_color);
+        }
+        targets.push_back(t);
+    }
+
+    struct timespec tv;
+    int64_t unix_ms = 0;
+    if (clock_gettime(CLOCK_REALTIME, &tv) == 0)
+        unix_ms = (int64_t)tv.tv_sec * 1000 + (int64_t)(tv.tv_nsec / 1e6);
+
+    g_ab02_pub->send(targets.data(), targets.size(), unix_ms);
+}
+
 // TCP 输出: 组装并发送每帧的 frame (跟踪) + detection (原始识别) NDJSON 消息。
 // box 均以 0-1 归一化 (整幅-AI: frame 用 g_ai_w/g_ai_h; detection 用整幅 fw/fh)。
 static void tcp_send_detections(const object_detect_result_list *od)
@@ -1879,8 +1975,11 @@ static void *post_thread(void *arg) {
             pthread_mutex_unlock(&g_od_lock);
             rgn_update(od);
 
-            // TCP + NDJSON 输出 (frame/detection)
-            tcp_send_detections(od);
+            // TCP + NDJSON 输出 (frame/detection) / CitRadar AB02 输出
+            if (g_ab02_cfg.enable)
+                ab02_send_detections(od);
+            else
+                tcp_send_detections(od);
 
             for (int k = 0; k < od->count; k++) {
                 const object_detect_result *r = &od->results[k];
@@ -2196,6 +2295,17 @@ int main(int argc, char *argv[]) {
     // TCP + NDJSON 输出 (失败不阻塞主流程, 仅告警)
     if (g_tcp_cfg.enable && tcp_output_init(&g_tcp_cfg) != 0)
         printf("[TCP] init fail (disable tcp output)\n");
+    // CitRadar AB02 协议输出 (TCP 客户端外连; 延迟连接, 失败仅告警)
+    if (g_ab02_cfg.enable) {
+        citradar::TcpPublisher::Config pc;
+        pc.host = g_ab02_cfg.host;
+        pc.port = (uint16_t)g_ab02_cfg.port;
+        pc.device_serial_hex = g_ab02_cfg.device_serial_hex;
+        g_ab02_pub = new citradar::TcpPublisher(pc);
+        printf("[AB02] publisher host=%s:%d serial=%s\n",
+               g_ab02_cfg.host.c_str(), g_ab02_cfg.port,
+               g_ab02_cfg.device_serial_hex.c_str());
+    }
 
     // 9. 启动三段流水线线程 + 业务线程
     ai_pipeline_init();
@@ -2233,6 +2343,7 @@ int main(int argc, char *argv[]) {
     deepsort_deinit();
     car_integ_deinit();
     tcp_output_deinit();
+    if (g_ab02_pub) { g_ab02_pub->close(); delete g_ab02_pub; g_ab02_pub = NULL; }
     media_cleanup();
     deinit_post_process();
     if (g_rtsp) rtsp_del_demo(g_rtsp);

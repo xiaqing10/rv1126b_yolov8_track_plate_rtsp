@@ -43,7 +43,7 @@ trap stop_yolo INT TERM
 
 # 标签固定路径(与默认配置一致)
 mkdir -p $APP_DIR/models/labels
-cp -f $APP_DIR/models/labels/coco_80_labels_list.txt $APP_DIR/models/labels/ 2>/dev/null
+cp -f $APP_DIR/models/labels/kezhu_labels.txt $APP_DIR/models/labels/ 2>/dev/null
 
 echo "stop rkipc ..."
 killall rkipc 2>/dev/null

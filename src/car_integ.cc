@@ -93,6 +93,13 @@ static float iou_box(float ax1, float ay1, float ax2, float ay2,
     return inter / uni;
 }
 
+// 主YOLO(kezhu-det 10类) 中需要回填车牌/车色的车辆类别 (0基):
+// 2=小车 3=厢车 4=巴士 5=卡车 6=摩托; 其余(人/自行车/三轮车等)视为非目标
+static inline int is_vehicle_cls(int cls_id)
+{
+    return cls_id == 2 || cls_id == 3 || cls_id == 4 || cls_id == 5 || cls_id == 6;
+}
+
 // ---------------- 对外接口 ----------------
 int car_integ_init(const car_integ_cfg_t *cfg)
 {
@@ -175,7 +182,7 @@ static void apply_track_attrs(object_detect_result_list *od)
 {
     for (int i = 0; i < od->count; i++) {
         object_detect_result *r = &od->results[i];
-        if (r->cls_id != 2 || r->track_id < 0) continue;
+        if (!is_vehicle_cls(r->cls_id) || r->track_id < 0) continue;
         track_attr_t *a = attr_for_track(r->track_id);
         if (!a) continue;
         if (a->plate_adopted && a->plate_number[0]) {
@@ -295,7 +302,7 @@ int car_integ_run(object_detect_result_list *od)
             int bid = -1; float best_iou = g_car_cfg.match_iou_thresh;
             for (int i = 0; i < od->count; i++) {
                 const object_detect_result *r = &od->results[i];
-                if (r->cls_id != 2 || r->track_id < 0) continue;
+                if (!is_vehicle_cls(r->cls_id) || r->track_id < 0) continue;
                 float ax1 = cars[best_car].x1 * s_ai, ay1 = cars[best_car].y1 * s_ai;
                 float ax2 = cars[best_car].x2 * s_ai, ay2 = cars[best_car].y2 * s_ai;
                 float iou = iou_box(ax1, ay1, ax2, ay2,
@@ -312,7 +319,7 @@ int car_integ_run(object_detect_result_list *od)
             float px2 = plates[p].x2 * s_ai, py2 = plates[p].y2 * s_ai;
             for (int i = 0; i < od->count; i++) {
                 const object_detect_result *r = &od->results[i];
-                if (r->cls_id != 2 || r->track_id < 0) continue;
+                if (!is_vehicle_cls(r->cls_id) || r->track_id < 0) continue;
                 float iou = iou_box(px1, py1, px2, py2,
                                     r->box.left, r->box.top, r->box.right, r->box.bottom);
                 if (iou > best_iou) { best_iou = iou; bid = i; }
@@ -356,7 +363,7 @@ int car_integ_run(object_detect_result_list *od)
         float ax2 = cars[c].x2 * s_ai, ay2 = cars[c].y2 * s_ai;
         for (int i = 0; i < od->count; i++) {
             const object_detect_result *r = &od->results[i];
-            if (r->cls_id != 2 || r->track_id < 0) continue;
+            if (!is_vehicle_cls(r->cls_id) || r->track_id < 0) continue;
             float iou = iou_box(ax1, ay1, ax2, ay2,
                                 r->box.left, r->box.top, r->box.right, r->box.bottom);
             if (iou > best_iou) { best_iou = iou; bid = i; }

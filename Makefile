@@ -29,7 +29,7 @@ RKNPU2     := $(SDK)/project/app/testdemo/yoloworld_demo/3rdparty/rknpu2
 RTSP_INC   := $(SDK)/media/common_algorithm/common_algorithm/misc/include
 
 # 注意: OpenCV 头必须放在 $(P)/include 之前 (屏蔽 include/opencv2 shim)
-INCS := $(OPENCV_INC) -I$(CAR) -I$(P)/include -I$(P)/include/deepsort -I$(P)/include/bytetrack -I/usr/include/eigen3 \
+INCS := $(OPENCV_INC) -I$(CAR) -I$(P)/include -I$(P)/include/deepsort -I$(P)/include/bytetrack -I$(P)/citradar_ab02 -I/usr/include/eigen3 \
         -I$(RK_MPI_INC) -I$(RK_DEFINES) \
         -I$(RKNPU2)/include -I$(RTSP_INC) $(RKAIQ_INC)
 
@@ -97,6 +97,8 @@ CAR_LIB_SRC := $(CAR)/detect.cc $(CAR)/plate_rec.cc $(CAR)/car_color.cc \
 CAR_INTEG_SRC := src/car_worker.cc src/car_integ.cc
 # ---- TCP + NDJSON 输出 (standalone, POSIX socket only) ----
 TCP_SRC := src/tcp_output.cc
+# ---- CitRadar AB02 协议发送 (客户端外连, 二进制) ----
+AB02_SRC := citradar_ab02/citradar_ab02.cpp
 
 # ---- Web control daemon (standalone, pthread+dl only, no SDK libs) ----
 web/yolo_web: web/yolo_web.c
@@ -129,8 +131,8 @@ car_img_test: src/car_img_test.cc lib/libcar.a
 	@echo "build car_img_test OK"
 
 # 里程碑3: 完整管线 VI->YOLO->RGN画框->RTSP (+车牌/车辆识别 +DeepSORT)
-yolo_rtsp: src/yolo_rtsp.cc $(YOLO_SRC) $(TRACK_SRC) $(DEEPSORT_SRC) $(CAR_INTEG_SRC) $(TCP_SRC) lib/libcar.a
-	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
+yolo_rtsp: src/yolo_rtsp.cc $(YOLO_SRC) $(TRACK_SRC) $(DEEPSORT_SRC) $(CAR_INTEG_SRC) $(TCP_SRC) $(AB02_SRC) lib/libcar.a
+	$(CXX) $(CXXFLAGS) -DCITRADAR_AB02_NO_MAIN $^ -o $@ $(LDFLAGS)
 	@echo "build yolo_rtsp OK"
 
 all: stream_demo yolo_img_test car_img_test yolo_rtsp web/yolo_web
