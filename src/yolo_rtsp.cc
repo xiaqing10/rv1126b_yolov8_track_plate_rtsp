@@ -311,34 +311,12 @@ static XCamReturn isp_err_cb(rk_aiq_err_msg_t *e) {
 }
 
 static int isp_init(int cam_id, const char *iq_dir) {
+    (void)cam_id; (void)iq_dir;
     setlinebuf(stdout);
-    if (!iq_dir) { g_aiq_ctx[cam_id] = NULL; return 0; }
-    setenv("HDR_MODE", "0", 1);
-    g_wdr_mode[cam_id] = RK_AIQ_WORKING_MODE_NORMAL;
-
-    rk_aiq_static_info_t info;
-    memset(&info, 0, sizeof(info));
-    rk_aiq_uapi2_sysctl_enumStaticMetas(cam_id, &info);
-    printf("ISP[%d] sensor=%s iq=%s\n", cam_id, info.sensor_info.sensor_name, iq_dir);
-
-    g_aiq_ctx[cam_id] = rk_aiq_uapi2_sysctl_init(info.sensor_info.sensor_name, iq_dir,
-                                                 isp_err_cb, isp_sof_cb);
-    if (!g_aiq_ctx[cam_id]) { printf("rkaiq init fail\n"); return -1; }
-    if (rk_aiq_uapi2_sysctl_prepare(g_aiq_ctx[cam_id], 0, 0, g_wdr_mode[cam_id]) != RK_SUCCESS) {
-        printf("rkaiq prepare fail\n"); return -1;
-    }
-    if (rk_aiq_uapi2_sysctl_start(g_aiq_ctx[cam_id]) != RK_SUCCESS) {
-        printf("rkaiq start fail\n"); return -1;
-    }
-#ifdef RV1126B
-    if (g_aiq_ctx[cam_id] && rk_aiq_uapi2_judgeNeedRawPipeCtrl(g_aiq_ctx[cam_id]))
-        RK_MPI_VI_CtrlRawStream(RK_FALSE);
-    else
-        RK_MPI_VI_CtrlRawStream(RK_TRUE);
-#endif
+    // 与 stream_demo 一致: 不主动初始化 ISP (该 SDK 下 uapi2 sysctl init/prepare/start
+    // 会与 rkipc 抢占摄像头导致阻塞), 直接复用系统已配置好的 VI/ISP 通路.
     return 0;
 }
-
 static void isp_deinit(int cam_id) {
     if (g_aiq_ctx[cam_id]) {
         rk_aiq_uapi2_sysctl_stop(g_aiq_ctx[cam_id], false);

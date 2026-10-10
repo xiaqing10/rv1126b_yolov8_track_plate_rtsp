@@ -1,99 +1,96 @@
 # =====================================================================
-# aarch64 YOLO 检测 + RTSP 推流 + 车牌/车辆识别  独立工程 Makefile
-# 基于 Makefile (armhf/RV1126B) 改造成 aarch64 版本。
-# 用法: make -f Makefile_64   (或先 source aarch64 工具链环境再 make -f Makefile_64)
+# aarch64 YOLO RTSP Makefile  (for atk_dlrv1126b_linux6.1_sdk, Buildroot aarch64)
+# 用法: make -f Makefile_64
 #
-# 工具链: SDK 自带 aarch64-rockchip1240-linux-gnu
-#   已配置。头文件 (rockit/mpi/rkaiq/rknn/rtsp) 沿用同 SDK 架构无关头。
-# !!! 仍需确认/修改的 (该 SDK 自带多为 armhf 预编译库) !!!
-#   OPENCV_DIR  -> 需 aarch64 版 OpenCV (头+库), 占位路径不一定存在
-#   RK_DEFINES  -> 需 aarch64 rockit 库目录
-#   RKNPU2      -> 需 aarch64 rknnrt 库
-#   lib/ 下预编译库 (librtsp.a / *.so) 需为 aarch64 版本
+# 说明:
+#   SDK 为 Buildroot 方案, 目标架构 aarch64 (BR2_aarch64=y).
+#   - 编译器: SDK 自带 prebuilts 的 aarch64-none-linux-gnu (Ubuntu18.04 可运行)
+#   - 库/头文件: 优先用 buildroot 输出的 sysroot (OpenCV4 / rknn / rkaiq / rga / mpp / asound / drm)
+#   - rockit: external/rockit 的 arm64/rv1126b (aarch64 库 + rk_defines.h)
+#   - librtsp.a: external/common_algorithm 的 aarch64 版本
+#   - Eigen: 用宿主机的 /usr/include/eigen3 (纯头文件, 与架构无关)
+# 注意: 本工程 lib/ 下的 *.so 是旧的 32 位 armhf, 与本 SDK(aarch64)不匹配,
+#       因此这里不再链接工程 lib/ 目录, 全部使用 SDK 的 aarch64 库。
 # =====================================================================
 P        := $(shell pwd)
-# ===== aarch64 交叉编译配置 (同一 SDK, 用其自带 aarch64 工具链) =====
-# SDK 根目录 (与 arm32 版同一 SDK):
-SDK64    := /root/sdk/rv1126b_linux_ipc_xiaoyu
+SDK      := /linux/rv1126b/atk_dlrv1126b_linux6.1_sdk
 CAR      := $(P)/src/car
-# aarch64 工具链前缀 (SDK 自带):
-CROSS    := /root/sdk/rv1126b_linux_ipc_xiaoyu/tools/linux/toolchain/aarch64-rockchip1240-linux-gnu/bin/aarch64-rockchip1240-linux-gnu-
+
+# ===== aarch64 交叉编译器 (SDK prebuilts) =====
+TOOLCHAIN := $(SDK)/buildroot/output/alientek_rv1126b/host/
+CROSS    := $(TOOLCHAIN)/bin/aarch64-linux-
 CC       := $(CROSS)gcc
 CXX      := $(CROSS)g++
 AR       := $(CROSS)ar
 
-# ---- aarch64 OpenCV (头+库均需 aarch64 版本) ----
-# 该 SDK 自带的是 armhf OpenCV, 不能用于 aarch64。需提供 aarch64 版 OpenCV:
-# 若板端 /usr 已预装 aarch64 OpenCV(头+库), 可改为:
-#   OPENCV_INC := (留空)
-#   OPENCV_LIB := (留空)
-#   OPENCV_3RD := (留空)
-#   OPENCV_LIBS := -lopencv_imgcodecs -lopencv_imgproc -lopencv_core
-#  并把 OPENCV_LIB/OPENCV_3RD 从 LIBDIR 中去掉。
-# aarch64 OpenCV 安装目录(占位, 请改):
-OPENCV_DIR := $(SDK64)/tools/linux/toolchain/opencv-aarch64
-OPENCV_INC := -I$(OPENCV_DIR)/include -I$(OPENCV_DIR)/include/opencv2
-OPENCV_LIB := $(OPENCV_DIR)/lib
-OPENCV_3RD := $(OPENCV_DIR)/share/OpenCV/3rdparty/lib
+# ===== Buildroot 输出 sysroot (OpenCV4 / rknn / rkaiq / rga / mpp / asound / drm) =====
+SYS      := $(SDK)/buildroot/output/alientek_rv1126b/host/aarch64-buildroot-linux-gnu/sysroot
+SYSROOT  := $(shell $(CC) -print-sysroot)
+CFLAGS   += --sysroot=$(SYSROOT)
 
-# ---- rockit / mpi 头 (架构无关, 沿用同 SDK 头文件) ----
-RK_MPI_INC := $(SDK64)/media/rockit/rockit/mpi/sdk/include
-# aarch64 rockit 库目录(含 rk_defines.h):
-RK_DEFINES := $(SDK64)/media/rockit/rockit/lib/arm64/rv1126b
-# ---- rkaiq 头 (架构无关) ----
-RKAIQ      := $(SDK64)/media/isp/camera_engine_rkaiq/rkaiq
-RKAIQ_INC  := -I$(RKAIQ)/include -I$(RKAIQ)/uAPI2 -I$(RKAIQ)/include/uAPI2 \
-              -I$(RKAIQ)/include/common -I$(RKAIQ)/include/xcore \
-              -I$(RKAIQ)/include/algos -I$(RKAIQ)/include/iq_parser \
-              -I$(RKAIQ)/include/iq_parser_v2
-# ---- rknn / rtsp 头 ----
-# rknpu2 头沿用同 SDK; 若其内部库为 armhf 需另供 aarch64 rknnrt。
-RKNPU2     := $(SDK64)/project/app/testdemo/yoloworld_demo/3rdparty/rknpu2
-RTSP_INC   := $(SDK64)/media/common_algorithm/common_algorithm/misc/include
+# ---- rockit / mpi 头 + arm64 库 ----
+RK_MPI_INC := $(SDK)/external/rockit/mpi/sdk/include
+RK_DEFINES := $(SDK)/external/rockit/lib/arm64/rv1126b
+RK_LIB     := $(SDK)/external/rockit/lib/arm64/rv1126b/linux
+# ---- rkaiq 头 (buildroot sysroot) ----
+RKAIQ_INC  := -I$(SYS)/usr/include/rkaiq -I$(SYS)/usr/include/rkaiq/uAPI2
+# ---- rknn 头 ----
+RKNN_INC   := -I$(SYS)/usr/include/rknn
+# ---- RTSP 库 (aarch64 版本) + 头 ----
+RTSP_A     := $(SDK)/external/common_algorithm/misc/lib/aarch64-rockchip1240-linux-gnu/librtsp.a
+RTSP_INC   := -I$(P)/include/rtsp -I$(SDK)/external/common_algorithm/misc/include
 
-# 注意: OpenCV 头必须放在 $(P)/include 之前 (屏蔽 include/opencv2 shim)
-INCS := $(OPENCV_INC) -I$(CAR) -I$(P)/include -I$(P)/include/deepsort -I$(P)/include/bytetrack -I$(P)/citradar_ab02 -I/usr/include/eigen3 \
-        -I$(RK_MPI_INC) -I$(RK_DEFINES) \
-        -I$(RKNPU2)/include -I$(RTSP_INC) $(RKAIQ_INC)
+# 头文件路径 (OpenCV4 优先于工程内 opencv2 shim)
+INCS := -I$(SYS)/usr/include/opencv4 \
+        -I$(CAR) -I$(P)/include -I$(P)/include/deepsort -I$(P)/include/bytetrack -I$(P)/citradar_ab02 \
+        -I$(RK_MPI_INC) -I$(RK_DEFINES) $(RKNN_INC) \
+        $(RKAIQ_INC) $(RTSP_INC) -I/linux/rv1126b/atk_dlrv1126b_linux6.1_sdk/yolo_rtsp_app/include/eigen-3.4.0/
 
-# aarch64: 64 位天然 16 字节对齐, 不再需要 EIGEN_DONT_ALIGN 绕开对齐分配器。
-# 但为兼容与行为一致, 仍保留也可; 这里注释掉以发挥 NEON 对齐性能。
-# aarch64 去掉 armv7 的 -march/-mfpu/-mfloat-abi, 改用 armv8。
+# aarch64: armv8-a, 无 EIGEN_DONT_ALIGN 需求
 CFLAGS := -g -Wall -O2 -fno-omit-frame-pointer -DRV1126B -DUAPI2 -DRKPLATFORM=ON -DARCH64=ON \
           -march=armv8-a -fopenmp $(INCS)
 CXXFLAGS := $(CFLAGS) -std=c++14
 
-LIBDIR := -L$(P)/lib -L$(OPENCV_LIB) -L$(OPENCV_3RD)
+LIBDIR := -L$(SYS)/usr/lib -L$(RK_LIB)
 
-# OpenCV 静态库 (aarch64 3rdparty 库名可能不同, 请按实际调整)
+# OpenCV 4.9 及其依赖编解码库
 OPENCV_LIBS := -lopencv_imgcodecs -lopencv_imgproc -lopencv_core \
-               -lIlmImf -llibjasper -llibjpeg-turbo -llibpng -llibtiff \
-               -llibwebp -lquirc -lzlib -ltegra_hal
+               -ljpeg -lpng -ltiff -lwebp -lz
 
 LIBS := -Wl,--start-group \
-        $(P)/lib/librtsp.a \
-        -lrockit -lrockchip_mpp -lrkaiq -lrga -lrksysutils -lrknnrt \
+        $(RTSP_A) \
+        -lrockit -lrockchip_mpp -lrkaiq -lrga -lrknnrt \
         -lasound -ldrm \
         $(OPENCV_LIBS) \
         -lpthread -lm -lstdc++ -ldl -fopenmp \
         -Wl,--end-group
 LDFLAGS := $(LIBDIR) $(LIBS) -Wl,-rpath,/oem/usr/lib:/oem/lib -Wl,--gc-sections -Wl,--as-needed
 
-# ---- YOLO 推理公共源码 ----
+# ---- YOLO 推理源码 ----
 YOLO_SRC := src/yolo/yolov8.cc src/yolo/postprocess.cc \
             src/image_utils.cc src/file_utils.cc
-# ---- ByteTrack 跟踪库 ----
+# ---- ByteTrack 跟踪 ----
 TRACK_SRC := src/bytetrack/BYTETracker.cpp src/bytetrack/STrack.cpp \
              src/bytetrack/kalmanFilter.cpp src/bytetrack/lapjv.cpp \
              src/bytetrack/utils.cpp
-# ---- DeepSORT 跟踪库 ----
+# ---- DeepSORT 跟踪 ----
 DEEPSORT_SRC := src/deepsort/kalmanfilter.cpp src/deepsort/track.cpp \
                 src/deepsort/tracker.cpp src/deepsort/nn_matching.cpp \
                 src/deepsort/linear_assignment.cpp src/deepsort/hungarianoper.cpp \
                 src/deepsort/reid_rknn.cpp src/deepsort/deepsort_integ.cpp
-# ---- 最小基线: 裸流 -> RTSP ----
-TEST_RTSP_LIBS := -Wl,--start-group $(P)/lib/librtsp.a -lrockit -lrockchip_mpp \
-                  -lrga -lrksysutils -lasound -ldrm -lpthread -lm -ldl -Wl,--end-group
+# ---- 车/车牌识别库 ----
+CAR_LIB_SRC := $(CAR)/detect.cc $(CAR)/plate_rec.cc $(CAR)/car_color.cc \
+               $(CAR)/pipeline.cc $(CAR)/lprnet.cc
+CAR_INTEG_SRC := src/car_worker.cc src/car_integ.cc
+# ---- TCP + NDJSON 输出 ----
+TCP_SRC := src/tcp_output.cc
+# ---- CitRadar AB02 协议 ----
+AB02_SRC := citradar_ab02/citradar_ab02.cpp
+
+# ---- 小工具: 解码 -> RTSP ----
+TEST_RTSP_LIBS := -Wl,--start-group $(RTSP_A) -lrockit -lrockchip_mpp \
+                  -lrga -lasound -ldrm -lpthread -lm -ldl -Wl,--end-group
+
 test_vdec_h264_rtsp: src/test_vdec_h264_rtsp.c
 	$(CC) $(CFLAGS) $< -o $@ $(LIBDIR) $(TEST_RTSP_LIBS) -Wl,-rpath,/oem/usr/lib:/oem/lib -Wl,--gc-sections -Wl,--as-needed
 	@echo "build test_vdec_h264_rtsp OK"
@@ -102,17 +99,7 @@ test_vdec_vpss_venc_rtsp: src/test_vdec_vpss_venc_rtsp.c
 	$(CC) $(CFLAGS) $< -o $@ $(LIBDIR) $(TEST_RTSP_LIBS) -Wl,-rpath,/oem/usr/lib:/oem/lib -Wl,--gc-sections -Wl,--as-needed
 	@echo "build test_vdec_vpss_venc_rtsp OK"
 
-# ---- 车牌/车辆识别管线 ----
-CAR_LIB_SRC := $(CAR)/detect.cc $(CAR)/plate_rec.cc $(CAR)/car_color.cc \
-               $(CAR)/pipeline.cc $(CAR)/lprnet.cc
-# ---- 识别集成 ----
-CAR_INTEG_SRC := src/car_worker.cc src/car_integ.cc
-# ---- TCP + NDJSON 输出 ----
-TCP_SRC := src/tcp_output.cc
-# ---- CitRadar AB02 协议发送 ----
-AB02_SRC := citradar_ab02/citradar_ab02.cpp
-
-# ---- Web control daemon (standalone, pthread+dl only, no SDK libs) ----
+# ---- Web control daemon (standalone, pthread+dl only) ----
 web/yolo_web: web/yolo_web.c
 	$(CC) -O2 -Wall -o web/yolo_web web/yolo_web.c -pthread -ldl
 	@echo "build web/yolo_web OK"
